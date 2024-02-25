@@ -1,10 +1,14 @@
-// Todo add static ip
-// todo add time server
-// todo add button
+// Todo 1 add static ip
+// +todo add time server
+// +todo 2 add button
+// todo 3 create func for open and close
+//? todo soft move to start position
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ServoSmooth.h>
+#include <NTPClient.h>
+#include <WiFiUdp.h>
 
 ServoSmooth servo;
 uint32_t tmr;
@@ -18,11 +22,18 @@ const int close=90;
 const int speed=120;
 const int acel=0.2;
 
+const long utcOffsetInSeconds = 10800;
+bool wait_open;
+int hour_open = 5;
+int min_open=15;
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
+
 ESP8266WebServer server(80);
 
 uint8_t food_pin = D4;
-bool food_status = HIGH;
-bool food_pre_status=LOW;
+bool food_status = LOW;
+bool food_pre_status=HIGH;
 
 enum State {
   SERVER,
@@ -34,7 +45,7 @@ String SendHTML(uint8_t food_stat)
 {
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<title>LED Control</title>\n";
+  ptr +="<title>FOOD</title>\n";
   ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
   ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
   ptr +=".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
@@ -72,7 +83,6 @@ void handle_food_on()
   Serial.println("Food Status: Open");
   server.send(200, "text/html", SendHTML(true)); 
   work_state=MOTOR;
-  tmr = millis();
 }
 
 void handle_food_off() 
@@ -80,8 +90,8 @@ void handle_food_off()
   food_status = LOW;
   Serial.println("Food Status: Close");
   server.send(200, "text/html", SendHTML(false)); 
+  wait_open=true;
   work_state=MOTOR;
-  tmr = millis();
 }
 
 void handle_NotFound()
@@ -108,38 +118,71 @@ void setup()
   Serial.println("");
   Serial.println("WiFi connected..!");
   Serial.print("Got IP: ");  Serial.println(WiFi.localIP());
-
+  timeClient.begin();
   server.on("/", handle_OnConnect);
   server.on("/food_on", handle_food_on);
   server.on("/food_off", handle_food_off);
   server.onNotFound(handle_NotFound);
   server.begin();
   Serial.println("HTTP server started");
-
-  servo.attach(food_pin,min_us,max_us);        // подключить
-  // servo.smoothStart();
+  servo.attach(food_pin,min_us,max_us,1000);
+  delay(1000);
   servo.setSpeed(speed);    // ограничить скорость
   servo.setAccel(acel);   	  // установить ускорение (разгон и торможение)
-   work_state=MOTOR;
+  work_state=MOTOR;
+  pinMode(D5, INPUT_PULLUP);
   tmr = millis();
+  wait_open=true;
 }
+
+
+void read_button()
+{
+  static bool flag = false;
+  bool btnState = !digitalRead(D5);
+  if (btnState && !flag) {  // обработчик нажатия
+    flag = true;
+    Serial.println("press");
+    work_state=MOTOR;
+    food_status =! food_status;
+    food_status ? wait_open=false : wait_open =true;
+  }
+  if (!btnState && flag) {  // обработчик отпускания
+    flag = false;  
+  }
+}
+
 
 void loop() 
 {
+  bool servo_finish=false;
   switch(work_state){
     case SERVER:
+      read_button();
       server.handleClient();
+      if (millis() - tmr >= 15000) {   // каждые 15 сек
+        tmr = millis();
+        timeClient.update();
+        Serial.print(timeClient.getHours());
+        Serial.print(":");
+        Serial.println(timeClient.getMinutes());
+      }
+      if (wait_open){
+        if(timeClient.getHours()==hour_open && timeClient.getMinutes()==min_open){
+          work_state=MOTOR;
+          food_status=!food_status;
+          wait_open=false;
+        }
+      }
       break;
     case MOTOR:
-      servo.tick();
       if (food_status!= food_pre_status){
           food_pre_status= food_status;
           servo.setTargetDeg(food_status ? open: close);  
           Serial.println("gOO");
       }
-      // TODO zamena na return tick
-      if (millis() - tmr >= 5000) {   //  3 сек
-        tmr = millis();
+      servo_finish=servo.tick();
+      if (servo_finish){
         work_state=SERVER;
         Serial.println("to Server");
       }     
