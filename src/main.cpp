@@ -1,8 +1,12 @@
 // Todo 1 add static ip
+// Todo set sp time in html https://arduino-tex.ru/news/72/esp826-uroki-http-zapros-post.html
+  // https://kotyara12.ru/iot/esp-http/
+// Todo add setpoint time variable to flash
 // +todo add time server
 // +todo 2 add button
-// todo 3 create func for open and close
-//? todo soft move to start position
+//? todo 3 create func for open and close. Need info
+//! todo soft move to start position
+// todo after food go sleep 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -10,7 +14,7 @@
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 
-ServoSmooth servo;
+ServoSmooth servo_2;
 uint32_t tmr;
 
 const char* ssid = "TP-Link_B5D2";  // SSID
@@ -23,25 +27,67 @@ const int speed=120;
 const int acel=0.2;
 
 const long utcOffsetInSeconds = 10800;
-bool wait_open;
+// bool wait_open;
 int hour_open = 5;
-int min_open=15;
+int min_open=20;
 WiFiUDP ntpUDP;
 NTPClient timeClient(ntpUDP, "pool.ntp.org", utcOffsetInSeconds);
 
 ESP8266WebServer server(80);
 
-uint8_t food_pin = D4;
-bool food_status = LOW;
-bool food_pre_status=HIGH;
+struct feeder{
+  uint8_t but_pin;
+  uint8_t food_pin;
+  bool open = false;
+  bool pre_status = true;
+  bool flag = false;
+  ServoSmooth servo;
+};
+
+feeder feeder1={D0, D1};
+feeder feeder2={D3, D4};
+feeder feeder3={D5, D6};
+
+bool work_to_timer=true;
+
+enum Status{
+  OPEN,
+  CLOSE
+};
+
+Status food_status = CLOSE;
 
 enum State {
   SERVER,
   MOTOR,
 };
+
 State work_state;
 
-String SendHTML(uint8_t food_stat)
+void get_food_status (){
+  if (!feeder1.open || !feeder2.open || !feeder3.open){
+    food_status=CLOSE;
+  }
+  else food_status=OPEN;
+}
+
+void open_all_feeder(){
+  feeder1.open=true;
+  feeder2.open=true;
+  feeder3.open=true;
+  get_food_status();
+  work_state=MOTOR;
+}
+
+void close_all_feeder(){
+  feeder1.open=false;
+  feeder2.open=false;
+  feeder3.open=false;
+  get_food_status();
+  work_state=MOTOR;
+}
+
+String SendHTML(Status food_stat)
 {
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
@@ -59,7 +105,7 @@ String SendHTML(uint8_t food_stat)
   ptr +="<body>\n";
   ptr +="<h1>Food for Cat </h1>\n";
   
-  if(food_stat)
+  if(food_stat == OPEN)
     ptr +="<p>Food Status: Open</p><a class=\"button button-off\" href=\"/food_off\">Close</a>\n";
   else
     ptr +="<p>Food Status: Close</p><a class=\"button button-on\" href=\"/food_on\">Open</a>\n";
@@ -79,27 +125,23 @@ void handle_OnConnect()
 
 void handle_food_on() 
 {
-  food_status = HIGH;
+  open_all_feeder();
   Serial.println("Food Status: Open");
-  server.send(200, "text/html", SendHTML(true)); 
-  work_state=MOTOR;
+  server.send(200, "text/html", SendHTML(OPEN)); 
+
 }
 
 void handle_food_off() 
 {
-  food_status = LOW;
+  close_all_feeder();
   Serial.println("Food Status: Close");
-  server.send(200, "text/html", SendHTML(false)); 
-  wait_open=true;
-  work_state=MOTOR;
+  server.send(200, "text/html", SendHTML(CLOSE)); 
 }
 
 void handle_NotFound()
 {
   server.send(404, "text/plain", "Not found");
 }
-
-
 
 void setup() 
 {
@@ -125,40 +167,74 @@ void setup()
   server.onNotFound(handle_NotFound);
   server.begin();
   Serial.println("HTTP server started");
-  servo.attach(food_pin,min_us,max_us,1000);
+
+  feeder1.servo.attach(feeder1.food_pin,min_us,max_us,1000);
   delay(1000);
-  servo.setSpeed(speed);    // ограничить скорость
-  servo.setAccel(acel);   	  // установить ускорение (разгон и торможение)
-  work_state=MOTOR;
-  pinMode(D5, INPUT_PULLUP);
+  feeder1.servo.setSpeed(speed);    
+  feeder1.servo.setAccel(acel);   	  
+  pinMode(feeder1.but_pin, INPUT_PULLUP);
+
+  feeder2.servo.attach(feeder2.food_pin,min_us,max_us,1000);
+  feeder2.servo.setSpeed(speed);    
+  feeder2.servo.setAccel(acel);   	
+  pinMode(feeder2.but_pin, INPUT_PULLUP);
+
+  feeder3.servo.attach(feeder3.food_pin,min_us,max_us,1000);
+  feeder3.servo.setSpeed(speed);    
+  feeder3.servo.setAccel(acel);   	
+  pinMode(feeder3.but_pin, INPUT_PULLUP);
+
   tmr = millis();
-  wait_open=true;
+  work_state=MOTOR;
+  // wait_open=true;
 }
 
 
-void read_button()
-{
-  static bool flag = false;
-  bool btnState = !digitalRead(D5);
-  if (btnState && !flag) {  // обработчик нажатия
-    flag = true;
+bool button_press(feeder& f){
+  bool btnState = !digitalRead(f.but_pin);
+  if (btnState && !f.flag) {  // обработчик нажатия
+    f.flag = true;
     Serial.println("press");
-    work_state=MOTOR;
-    food_status =! food_status;
-    food_status ? wait_open=false : wait_open =true;
+    f.open =! f.open ;
+    return true;
   }
-  if (!btnState && flag) {  // обработчик отпускания
-    flag = false;  
+  if (!btnState && f.flag) {  // обработчик отпускания
+    f.flag = false;  
   }
+  return false;
 }
 
+bool need_open(feeder& f){
+  if(timeClient.getHours()==hour_open && timeClient.getMinutes()==min_open){
+    f.open=true;
+    return true;
+  }
+  return false;
+}
+
+bool work_servo(feeder& f){
+  if (f.open!= f.pre_status){
+      Serial.println(f.open);
+      Serial.println(f.pre_status);
+      f.pre_status = f.open;
+      f.servo.setTargetDeg(f.open ? open: close);  
+      Serial.println("Work servo");
+
+  }
+  if (f.servo.tick()) return true;
+  return false;
+}
 
 void loop() 
 {
-  bool servo_finish=false;
+  get_food_status();
+  // bool servo_finish=false;
   switch(work_state){
     case SERVER:
-      read_button();
+      if (button_press(feeder1) || button_press(feeder2) || button_press(feeder3)){
+        work_state=MOTOR;
+        break;
+      }
       server.handleClient();
       if (millis() - tmr >= 15000) {   // каждые 15 сек
         tmr = millis();
@@ -167,29 +243,20 @@ void loop()
         Serial.print(":");
         Serial.println(timeClient.getMinutes());
       }
-      if (wait_open){
+      if (work_to_timer){
         if(timeClient.getHours()==hour_open && timeClient.getMinutes()==min_open){
-          work_state=MOTOR;
-          food_status=!food_status;
-          wait_open=false;
+          open_all_feeder();
+          work_to_timer=false;
         }
       }
       break;
     case MOTOR:
-      if (food_status!= food_pre_status){
-          food_pre_status= food_status;
-          servo.setTargetDeg(food_status ? open: close);  
-          Serial.println("gOO");
-      }
-      servo_finish=servo.tick();
-      if (servo_finish){
-        work_state=SERVER;
-        Serial.println("to Server");
-      }     
+        if (work_servo(feeder1) && work_servo(feeder2) && work_servo(feeder3)){
+          work_state=SERVER;
+          Serial.println("end Work Servo");
+        }
+
       break;
   }
-  
-    
-
  }
 
