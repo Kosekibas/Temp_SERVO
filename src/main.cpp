@@ -5,8 +5,8 @@
 // +todo add time server
 // +todo 2 add button
 //? todo 3 create func for open and close. Need info
-//! todo soft move to start position
-// todo after food go sleep 
+//+- todo soft move to start position
+// +todo after food go sleep 
 #include <Arduino.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -60,6 +60,7 @@ Status food_status = CLOSE;
 enum State {
   SERVER,
   MOTOR,
+  SLEEP,
 };
 
 State work_state;
@@ -252,11 +253,14 @@ void loop()
       break;
     case MOTOR:
         if (work_servo(feeder1) && work_servo(feeder2) && work_servo(feeder3)){
-          work_state=SERVER;
+          if (work_to_timer) work_state=SERVER;
+          else work_state=SLEEP;
           Serial.println("end Work Servo");
         }
-
       break;
+    case SLEEP:
+      ESP.deepSleep(0);
+    break;
   }
  }
 
